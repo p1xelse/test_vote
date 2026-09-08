@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Голосование</title>
+<link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+<main class="screen">
+  <div id="app" class="card">
+    <p class="muted">Загружаем опрос…</p>
+  </div>
+  <p class="footnote">Голосование анонимное. Мы не сохраняем ничего, что связывало бы голос с вами.</p>
+</main>
+
+<script>
+const pollId = new URLSearchParams(location.search).get('poll');
+const app = document.getElementById('app');
+
+let poll = null;
+let selected = new Set();
+let refreshTimer = null;
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, ch => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]
+  ));
+}
+
+function renderMessage(text, tone) {
+  app.innerHTML = `<p class="${tone || 'muted'}">${escapeHtml(text)}</p>`;
+}
+
+const pluralRules = new Intl.PluralRules('ru-RU');
+const voteForms = { one: 'голос', few: 'голоса', many: 'голосов', other: 'голоса' };
+
+function votes(count) {
+  return `${count.toLocaleString('ru-RU')} ${voteForms[pluralRules.select(count)]}`;
+}
+
+async function api(path, options) {
+  const response = await fetch(path, options);
+  const body = response.status === 204 ? null : await response.json().catch(() => null);
+  return { status: response.status, body };
+}
+
+async function loadPoll() {
+  // Этот запрос заодно выдаёт куку голосующего: к моменту нажатия кнопки
+  // браузер уже знает, кто мы, и дедупликация работает точнее.
+  const { status, body } = await api(`/api/v1/polls/${pollId}`);
+  if (status !== 200) {
+    renderMessage(status === 404 ? 'Опрос не найден.' : 'Не удалось загрузить опрос.', 'error');
+    return;
+  }
+  poll = body;
+  selected = new Set();
+  renderPoll();
+}
+
+function renderPoll() {
+  if (!poll.accepts_votes) {
+    showResults('Голосование завершено.');
+    return;
+  }
+
+  const multiple = poll.kind === 'multiple_choice';
+  const hint = multiple
+    ? `Можно выбрать до ${poll.max_choices} вариантов.`
+    : 'Выберите один вариант.';
+
+  app.innerHTML = `
+    <p class="eyebrow">${escapeHtml(poll.title)}</p>
+    <h1>${escapeHtml(poll.question)}</h1>
+    <p class="muted">${escapeHtml(hint)}</p>
+    <div class="options">
+      ${poll.options.map(option => `
+        <button class="option" data-id="${option.id}">${escapeHtml(option.text)}</button>
+      `).join('')}
+    </div>
+    ${multiple ? '<button class="primary" id="submit" disabled>Проголосовать</button>' : ''}
+    <p class="status" id="status"></p>
+  `;
+
+  app.querySelectorAll('.option').forEach(button => {
+    button.addEventListener('click', () => {
+      if (!multiple) {
+        castVote([button.dataset.id]);
+        return;
+      }
+      toggle(button);
+    });
+  });
+
+  if (multiple) {
+    document.getElementById('submit').addEventListener('click', () => castVote([...selected]));
+  }
+}
+
+function toggle(button) {
+  const id = button.dataset.id;
+  if (selected.has(id)) {
+    selected.delete(id);
+  } else if (selected.size < poll.max_choices) {
+    selected.add(id);
+  }
+  app.querySelectorAll('.option').forEach(el => {
+    el.classList.toggle('selected', selected.has(el.dataset.id));
+  });
+  document.getElementById('submit').disabled = selected.size === 0;
+}
+
+async function castVote(optionIds) {
+  setStatus('Отправляем…');
+  app.querySelectorAll('button').forEach(el => (el.disabled = true));
+
+  const { status, body } = await api(`/api/v1/polls/${pollId}/vote`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ option_ids: optionIds }),
+  });
+
+  if (status === 202) {
+    showResults('Голос учтён. Спасибо!');
+    return;
+  }
+
+  const code = body && body.error && body.error.code;
+  if (code === 'already_voted') {
+    showResults('С этого устройства уже голосовали.');
+    return;
+  }
+  if (code === 'poll_not_accepting') {
+    showResults('Голосование уже закрыто.');
+    return;
+  }
+
+  setStatus('Не получилось отправить голос. Попробуйте ещё раз.', 'error');
+  app.querySelectorAll('button').forEach(el => (el.disabled = false));
+}
+
+function setStatus(text, tone) {
+  const el = document.getElementById('status');
+  if (el) {
+    el.textContent = text;
+    el.className = `status ${tone || ''}`;
+  }
+}
+
+async function showResults(note) {
+  const { status, body } = await api(`/api/v1/polls/${pollId}/results`);
+  if (status !== 200) {
+    renderMessage('Не удалось загрузить результаты.', 'error');
+    return;
+  }
+
+  app.innerHTML = `
+    <p class="eyebrow">${escapeHtml(body.title)}</p>
+    <h1>${escapeHtml(body.question)}</h1>
+    <p class="note">${escapeHtml(note)}</p>
+    <div class="results">
+      ${body.options.map(option => `
+        <div class="result">
+          <div class="result-head">
+            <span>${escapeHtml(option.text)}</span>
+            <strong>${(option.share * 100).toFixed(1)}%</strong>
+          </div>
+          <div class="bar"><span style="width:${(option.share * 100).toFixed(2)}%"></span></div>
+          <div class="muted small">${votes(option.votes)}</div>
+        </div>
+      `).join('')}
+    </div>
+    <p class="muted small">Всего проголосовало: ${body.voters.toLocaleString('ru-RU')}${body.final ? ' · итог финальный' : ''}</p>
+  `;
+
+  clearTimeout(refreshTimer);
+  if (!body.final) {
+    refreshTimer = setTimeout(() => showResults(note), 2000);
+  }
+}
+
+if (!pollId) {
+  renderMessage('В ссылке не указан опрос. Отсканируйте QR-код ещё раз.', 'error');
+} else {
+  loadPoll();
+}
+</script>
+</body>
+</html>

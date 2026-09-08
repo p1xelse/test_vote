@@ -1,0 +1,5 @@
+.DS_Store
+/backend/bin/
+/loadtest/results/
+*.local.override.toml
+.env

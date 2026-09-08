@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Опросы · админка</title>
+<link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+<div class="page">
+  <h1>Опросы</h1>
+
+  <section class="panel">
+    <h2>Доступ</h2>
+    <label>Админский токен
+      <input id="token" type="password" placeholder="local-admin-token" autocomplete="off">
+    </label>
+    <button class="ghost" id="save-token">Сохранить и обновить</button>
+    <p class="muted small">Токен хранится только в localStorage этого браузера.</p>
+  </section>
+
+  <section class="panel">
+    <h2>Новый опрос</h2>
+    <label>Название (для админки)
+      <input id="title" placeholder="Прайм-тайм, 21:00">
+    </label>
+    <label>Вопрос
+      <input id="question" placeholder="Кто должен победить?">
+    </label>
+    <div class="row">
+      <label>Тип
+        <select id="kind">
+          <option value="single_choice">Один вариант</option>
+          <option value="ab">A/B (ровно два варианта)</option>
+          <option value="multiple_choice">Несколько вариантов</option>
+        </select>
+      </label>
+      <label>Максимум выборов (для «нескольких»)
+        <input id="max-choices" type="number" min="1" value="1">
+      </label>
+    </div>
+    <label>Варианты, по одному в строке
+      <textarea id="options" placeholder="Первый&#10;Второй"></textarea>
+    </label>
+    <button class="primary" id="create">Создать опрос</button>
+    <p class="status" id="create-status"></p>
+  </section>
+
+  <section class="panel">
+    <h2>Список</h2>
+    <div id="list"><p class="muted">Введите токен, чтобы увидеть опросы.</p></div>
+  </section>
+
+  <section class="panel" id="results-panel" hidden>
+    <h2>Результаты</h2>
+    <div id="results"></div>
+  </section>
+</div>
+
+<script>
+const tokenInput = document.getElementById('token');
+const listEl = document.getElementById('list');
+const resultsPanel = document.getElementById('results-panel');
+const resultsEl = document.getElementById('results');
+
+let watching = null;
+let watchTimer = null;
+
+tokenInput.value = localStorage.getItem('admin_token') || '';
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, ch => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]
+  ));
+}
+
+async function api(path, options = {}) {
+  const response = await fetch(path, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${tokenInput.value.trim()}`,
+      ...(options.headers || {}),
+    },
+  });
+  const body = await response.json().catch(() => null);
+  return { status: response.status, body };
+}
+
+function errorText(body, fallback) {
+  return (body && body.error && body.error.message) || fallback;
+}
+
+document.getElementById('save-token').addEventListener('click', () => {
+  localStorage.setItem('admin_token', tokenInput.value.trim());
+  loadPolls();
+});
+
+document.getElementById('create').addEventListener('click', async () => {
+  const status = document.getElementById('create-status');
+  const options = document.getElementById('options').value
+    .split('\n').map(line => line.trim()).filter(Boolean);
+
+  const payload = {
+    title: document.getElementById('title').value.trim(),
+    question: document.getElementById('question').value.trim(),
+    kind: document.getElementById('kind').value,
+    max_choices: Number(document.getElementById('max-choices').value) || 1,
+    options,
+  };
+
+  status.textContent = 'Создаём…';
+  status.className = 'status';
+
+  const { status: code, body } = await api('/api/v1/admin/polls', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+
+  if (code !== 201) {
+    status.textContent = errorText(body, 'Не удалось создать опрос.');
+    status.className = 'status error';
+    return;
+  }
+
+  status.textContent = 'Готово. Опрос создан в состоянии draft — запустите его кнопкой «Открыть».';
+  status.className = 'status note';
+  document.getElementById('question').value = '';
+  document.getElementById('options').value = '';
+  loadPolls();
+});
+
+async function loadPolls() {
+  if (!tokenInput.value.trim()) return;
+
+  const { status, body } = await api('/api/v1/admin/polls');
+  if (status !== 200) {
+    listEl.innerHTML = `<p class="error">${escapeHtml(errorText(body, 'Не удалось загрузить список.'))}</p>`;
+    return;
+  }
+
+  if (!body.polls.length) {
+    listEl.innerHTML = '<p class="muted">Опросов пока нет.</p>';
+    return;
+  }
+
+  listEl.innerHTML = body.polls.map(poll => {
+    const voteUrl = `${location.origin}/?poll=${poll.id}`;
+    const actions = [];
+    if (poll.status === 'draft') actions.push(`<button class="ghost" data-open="${poll.id}">Открыть</button>`);
+    if (poll.status === 'active') actions.push(`<button class="ghost" data-close="${poll.id}">Закрыть</button>`);
+    actions.push(`<button class="ghost" data-results="${poll.id}">Результаты</button>`);
+
+    return `
+      <div class="poll-row">
+        <div class="grow">
+          <div>${escapeHtml(poll.question)}</div>
+          <div class="muted small">${escapeHtml(poll.title)} · ${escapeHtml(poll.kind)}</div>
+          <code>${escapeHtml(voteUrl)}</code>
+        </div>
+        <span class="tag ${poll.status}">${escapeHtml(poll.status)}</span>
+        ${actions.join(' ')}
+      </div>`;
+  }).join('');
+
+  listEl.querySelectorAll('[data-open]').forEach(el =>
+    el.addEventListener('click', () => setStatus(el.dataset.open, 'active')));
+  listEl.querySelectorAll('[data-close]').forEach(el =>
+    el.addEventListener('click', () => setStatus(el.dataset.close, 'closed')));
+  listEl.querySelectorAll('[data-results]').forEach(el =>
+    el.addEventListener('click', () => watch(el.dataset.results)));
+}
+
+async function setStatus(pollId, status) {
+  await api(`/api/v1/admin/polls/${pollId}/status`, {
+    method: 'POST',
+    body: JSON.stringify({ status }),
+  });
+  loadPolls();
+}
+
+async function watch(pollId) {
+  watching = pollId;
+  resultsPanel.hidden = false;
+  await renderResults();
+  resultsPanel.scrollIntoView({ behavior: 'smooth' });
+}
+
+async function renderResults() {
+  if (!watching) return;
+
+  const { status, body } = await api(`/api/v1/admin/polls/${watching}/results`);
+  if (status !== 200) {
+    resultsEl.innerHTML = `<p class="error">${escapeHtml(errorText(body, 'Не удалось загрузить результаты.'))}</p>`;
+    return;
+  }
+
+  resultsEl.innerHTML = `
+    <p class="eyebrow">${escapeHtml(body.title)}</p>
+    <h1>${escapeHtml(body.question)}</h1>
+    <div class="results">
+      ${body.options.map(option => `
+        <div class="result">
+          <div class="result-head">
+            <span>${escapeHtml(option.text)}</span>
+            <strong>${(option.share * 100).toFixed(1)}% · ${option.votes.toLocaleString('ru-RU')}</strong>
+          </div>
+          <div class="bar"><span style="width:${(option.share * 100).toFixed(2)}%"></span></div>
+        </div>`).join('')}
+    </div>
+    <p class="muted small">
+      Проголосовало: ${body.voters.toLocaleString('ru-RU')} ·
+      источник: ${escapeHtml(body.source)} ·
+      ${body.final ? 'итог финальный' : 'опрос идёт, цифры обновляются'}
+    </p>`;
+
+  clearTimeout(watchTimer);
+  if (!body.final) {
+    watchTimer = setTimeout(renderResults, 2000);
+  }
+}
+
+loadPolls();
+</script>
+</body>
+</html>

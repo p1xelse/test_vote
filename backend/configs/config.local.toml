@@ -1,0 +1,38 @@
+[app]
+env = "local"
+http_addr = ":8080"
+debug_addr = ":8081"
+shutdown_timeout = "10s"
+frontend_dir = "../frontend"
+
+[admin]
+# Переопределяется переменной ADMIN_TOKEN.
+token = "local-admin-token"
+
+[postgres]
+dsn = "postgres://vote:vote@localhost:5432/vote?sslmode=disable"
+max_conns = 20
+min_conns = 4
+connect_timeout = "5s"
+
+[redis]
+addrs = ["localhost:6379"]
+
+[vote]
+cookie_name = "vid"
+# Переопределяется переменной COOKIE_SECRET. В проде — секрет из хранилища.
+cookie_secret = "local-cookie-secret-change-me"
+dedup_ttl = "24h"
+# Счётчики одного опроса размазаны по 64 ключам Redis: иначе весь трафик
+# опроса приходит в один слот кластера.
+counter_shards = 64
+# Один счётчик внутри процесса разложен по 64 атомикам с padding'ом,
+# чтобы 500k инкрементов в секунду не дрались за общую кэш-линию.
+counter_stripes = 64
+flush_interval = "200ms"
+snapshot_interval = "2s"
+poll_cache_ttl = "1s"
+results_cache_ttl = "500ms"
+# Грубая защита от простого скрипта в цикле. Дедупликация — отдельно.
+rate_limit_rps = 20
+rate_limit_burst = 40

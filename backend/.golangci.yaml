@@ -1,0 +1,83 @@
+version: "2"
+
+run:
+  timeout: 5m
+  build-tags:
+    - integration
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - copyloopvar
+    - dupl
+    - errorlint
+    - exhaustive
+    - gocritic
+    - gosec
+    - misspell
+    - nakedret
+    - nilerr
+    - noctx
+    - nolintlint
+    - prealloc
+    - revive
+    - rowserrcheck
+    - sqlclosecheck
+    - unconvert
+    - unparam
+    - wastedassign
+    - whitespace
+
+  settings:
+    errorlint:
+      asserts: false # echo отдаёт *echo.HTTPError через приведение типа
+    exhaustive:
+      default-signifies-exhaustive: true
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - performance
+        - style
+      disabled-checks:
+        - whyNoLint
+        # Доменные структуры (dto.Poll и родня) сознательно ходят по значению:
+        # сервис опросов раздаёт копии закэшированного объекта, чтобы вызывающий
+        # не мог его изменить. Все такие места — холодные, на горячем пути
+        # голосования копий этих структур нет.
+        - hugeParam
+    revive:
+      rules:
+        - name: exported
+        - name: package-comments
+        - name: var-naming
+          arguments:
+            - []
+            - []
+            # Пакеты ручек лежат в каталогах со снейк-кейсом, как в API,
+            # а имя пакета пишется слитно.
+            - - upperCaseConst: true
+
+  exclusions:
+    rules:
+      - path: _test\.go$
+        linters:
+          - dupl
+          - gosec
+          - prealloc
+      # Сгенерированные моки не наши, править их бессмысленно.
+      - path: /mocks/
+        linters:
+          - revive
+          - dupl
+
+formatters:
+  enable:
+    - gofmt
+    - gci
+  settings:
+    gci:
+      sections:
+        - standard
+        - default
+        - prefix(github.com/dneumoin/test_vote/backend)
